@@ -1,0 +1,16 @@
+# 构建输出
+build/
+out/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+
+# 中间产物
+*.obj
+*.exp
+*.ilk
+*.pdb
+probe_out.txt
+flash_log.csv
