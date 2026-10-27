@@ -15,6 +15,11 @@
 #include <gdiplus.h>
 #include <shlwapi.h>
 
+// spdlog（文件日志）——必须在 windows.h/gdiplus 之后：
+// 提前引入会破坏 GDI+ 头的 GUID 宏展开（GdiplusImaging.h C2440）
+#include <spdlog/spdlog.h>
+#include <spdlog/sinks/rotating_file_sink.h>
+
 // ---- 控件与布局 ----
 
 #define BAR_H 44
@@ -31,7 +36,7 @@ typedef struct { int id; int w; const wchar_t* cls; const wchar_t* text; DWORD s
 static const CtlSpec kControls[] = {
     {IDC_DEVICE_COMBO, 300, L"COMBOBOX", NULL, CBS_DROPDOWNLIST | WS_VSCROLL},
     {IDC_REFRESH_BTN,   70, L"BUTTON",  L"Refresh",   0},
-    {IDC_FORMAT_COMBO, 160, L"COMBOBOX", NULL, CBS_DROPDOWNLIST | WS_VSCROLL},
+    {IDC_FORMAT_COMBO, 230, L"COMBOBOX", NULL, CBS_DROPDOWNLIST | WS_VSCROLL},
     {IDC_ROTATE_BTN,   100, L"BUTTON",  L"Rotate 0",  0},
     {IDC_MIRROR_BTN,    86, L"BUTTON",  L"Mirror",    0},
     {IDC_FLIP_BTN,      70, L"BUTTON",  L"Flip",      0},
@@ -55,6 +60,7 @@ typedef struct {
     int rotate;           // 0/1/2/3 = 0/90/180/270
     int mirror;
     int flip;
+    int curFps;           // 当前会话协商帧率（get_frame 超时适配；0 = 未知）
 
     unsigned int* rgb;
     int rgbW, rgbH;
@@ -76,6 +82,7 @@ static HWND g_hwnd;
 #define WM_APP_LOG    (WM_APP + 2)
 
 static volatile LONG g_errorNotified;  // 1 = 错误回调已触发（流断确认）
+static int g_firstFrameLogged;         // 会话内首帧只记一次（openDevice 重置）
 
 #define LOG_LINES 4
 #define LOG_TEXT  160
@@ -86,6 +93,7 @@ static CRITICAL_SECTION g_logCs;
 static void onErrorCb(sparkcap_device_t* dev, int code, void* userdata)
 {
     (void)dev; (void)userdata;
+    spdlog::error("error callback: code={} ({})", code, "stream lost");
     InterlockedExchange(&g_errorNotified, 1);
     PostMessageW(g_hwnd, WM_APP_ERROR, (WPARAM)code, 0);  // 唤醒重绘（跨线程安全）
 }
@@ -96,6 +104,11 @@ static void onLogCb(sparkcap_device_t* dev, sparkcap_log_level_t level,
     (void)dev; (void)userdata;
     const char tag = (level == SPARKCAP_LOG_ERROR) ? 'E'
                    : (level == SPARKCAP_LOG_WARN)  ? 'W' : 'I';
+    // 落盘（spdlog 线程安全）+ 预览区显示
+    spdlog::log(level == SPARKCAP_LOG_ERROR ? spdlog::level::err
+              : level == SPARKCAP_LOG_WARN  ? spdlog::level::warn
+              : spdlog::level::info,
+              "[{}] {}", backend, message);
     EnterCriticalSection(&g_logCs);
     sprintf_s(g_logs[g_logHead], LOG_TEXT, "%c[%s] %s", tag, backend, message);
     // FFmpeg 日志自带尾换行，去掉
@@ -297,9 +310,40 @@ static const unsigned int* applyTransform(int* outW, int* outH)
 
 // ---- 设备与能力 ----
 
+static const char* pixfmtName(sparkcap_pixfmt_t f)
+{
+    switch (f) {
+    case SPARKCAP_PIXFMT_NV12:  return "NV12";
+    case SPARKCAP_PIXFMT_I420:  return "I420";
+    case SPARKCAP_PIXFMT_YUY2:  return "YUY2";
+    case SPARKCAP_PIXFMT_RGB24: return "RGB24";
+    case SPARKCAP_PIXFMT_RGB32: return "RGB32";
+    case SPARKCAP_PIXFMT_MJPG:  return "MJPG";
+    default: return "?";
+    }
+}
+
+// 未压缩格式的估算带宽（MB/s）；压缩/未知格式返回 0（无法估算）。
+// bpp 用 ×2 定点（NV12/I420=3、YUY2=4、RGB24=6、RGB32=8）避免浮点。
+// USB 2.0 等时传输有效带宽 ~35 MB/s：超出的未压缩格式会花屏/停流。
+static long long formatBandwidthMBs(int w, int h, sparkcap_pixfmt_t f, int fps)
+{
+    long long bpp2;
+    switch (f) {
+    case SPARKCAP_PIXFMT_NV12:
+    case SPARKCAP_PIXFMT_I420:  bpp2 = 3; break;
+    case SPARKCAP_PIXFMT_YUY2:  bpp2 = 4; break;
+    case SPARKCAP_PIXFMT_RGB24: bpp2 = 6; break;
+    case SPARKCAP_PIXFMT_RGB32: bpp2 = 8; break;
+    default: return 0;
+    }
+    return (long long)w * h * bpp2 * fps / 2 / 1000000;
+}
+
 static void closeDevice(void)
 {
     if (g_app.dev != NULL) {
+        spdlog::info("close: {}", g_app.devices[g_app.current].name);
         sparkcap_stop(g_app.dev);
         sparkcap_close(g_app.dev);
         g_app.dev = NULL;
@@ -323,17 +367,24 @@ static int openDevice(int index)
     const sparkcap_device_info_t* info = &g_app.devices[g_app.current];
 
     if (sparkcap_open(g_app.backend, info->id, &g_app.dev) != SPARKCAP_ERR_OK) {
+        spdlog::warn("open failed: {}", info->name);
         g_app.dev = NULL;
         return -1;
     }
+    spdlog::info("open: {}", info->name);
     // 错误回调须在 start 前注册（running 后注册返回 UNSUPPORTED）
     InterlockedExchange(&g_errorNotified, 0);
     sparkcap_set_error_callback(g_app.dev, onErrorCb, NULL);
-    int w = 0, h = 0;
+    int w = 0, h = 0, fps = 0;
     sparkcap_pixfmt_t fmtPref = SPARKCAP_PIXFMT_UNKNOWN;
     if (g_app.formatSel > 0 && g_app.formatSel <= g_app.formatCount) {
-        w = g_app.formats[g_app.formatSel - 1].width;
-        h = g_app.formats[g_app.formatSel - 1].height;
+        // 手选：完整传格式偏好与帧率（此前只传 w/h，库在同分辨率组内自由选型，
+        // 手选 MJPG 可能实际协商成 NV12——带宽目的落空）
+        const sparkcap_device_format_t* fm = &g_app.formats[g_app.formatSel - 1];
+        w = fm->width;
+        h = fm->height;
+        fmtPref = fm->pixelFormat;
+        fps = fm->fps;
     } else if (g_app.formatCount > 0) {
         // Default：MJPG 优先（USB 摄像头行业默认，Windows 相机应用同策略；
         // GDI+ 逐帧解码）+ 带宽最小（w*h*fps 最小）——高分辨率未压缩格式
@@ -358,14 +409,19 @@ static int openDevice(int index)
             w = g_app.formats[bestIdx].width;
             h = g_app.formats[bestIdx].height;
             fmtPref = g_app.formats[bestIdx].pixelFormat;
+            fps = g_app.formats[bestIdx].fps;
         }
     }
-    if (sparkcap_start(g_app.dev, w, h, fmtPref, 0) != SPARKCAP_ERR_OK) {
+    spdlog::info("start: w={} h={} fmt={} fps={}", w, h, (int)fmtPref, fps);
+    if (sparkcap_start(g_app.dev, w, h, fmtPref, fps) != SPARKCAP_ERR_OK) {
+        spdlog::warn("start failed");
         sparkcap_close(g_app.dev);
         g_app.dev = NULL;
         return -1;
     }
+    g_app.curFps = fps;
     g_app.paused = 0;
+    g_firstFrameLogged = 0;  // 新会话：首帧日志重新生效
     return 0;
 }
 
@@ -375,6 +431,10 @@ static void refreshDeviceCombo(void)
     if (sparkcap_list_devices(g_app.backend, g_app.devices, &count) != SPARKCAP_ERR_OK)
         count = 0;
     g_app.deviceCount = count;
+    spdlog::info("device list: {} entries", count);
+    for (int i = 0; i < count; ++i)
+        spdlog::info("  [{}] {} (backend={})", i, g_app.devices[i].name,
+                     (int)g_app.devices[i].backend);
 
     SendMessageW(g_ctl[0], CB_RESETCONTENT, 0, 0);
     for (int i = 0; i < count; ++i) {
@@ -402,9 +462,15 @@ static void fillFormatCombo(void)
             g_app.formatCount = n > cap ? cap : n;  // get_formats 更新为总数，可能 > 容量
     }
     for (int i = 0; i < g_app.formatCount; ++i) {
+        const sparkcap_device_format_t* fm = &g_app.formats[i];
         char text[96];
-        sprintf_s(text, sizeof(text), "%dx%d @%d", g_app.formats[i].width,
-                  g_app.formats[i].height, g_app.formats[i].fps);
+        const long long mbps = formatBandwidthMBs(fm->width, fm->height, fm->pixelFormat, fm->fps);
+        if (mbps > 35)
+            sprintf_s(text, sizeof(text), "%dx%d %s @%d (%lldMB/s!)",
+                      fm->width, fm->height, pixfmtName(fm->pixelFormat), fm->fps, mbps);
+        else
+            sprintf_s(text, sizeof(text), "%dx%d %s @%d",
+                      fm->width, fm->height, pixfmtName(fm->pixelFormat), fm->fps);
         wchar_t wtext[96];
         MultiByteToWideChar(CP_UTF8, 0, text, -1, wtext, 96);
         SendMessageW(g_ctl[2], CB_ADDSTRING, 0, (LPARAM)wtext);
@@ -426,16 +492,34 @@ static void paint(HDC dc, HWND hwnd)
     static int lastPixelFormat = -1;
     static int lastStride = 0;
     static int lastError = 0;  // 最近的 get_frame 错误（0 = 有帧）
+    static int waitStreak = 0;  // 连续超时计数（防抖：偶发超时重画上一帧，不闪 waiting 文本）
     if (!g_app.paused && g_app.dev != NULL)
     {
-        const int grc = sparkcap_get_frame(g_app.dev, &f, 200);
+        // 超时随协商帧率适配：低帧率会话的帧间隔本来就 >200ms，不能算超时
+        const int byFps = (g_app.curFps > 0) ? 2500 / g_app.curFps : 0;
+        const int timeoutMs = (byFps > 200) ? byFps : 200;
+        const int grc = sparkcap_get_frame(g_app.dev, &f, timeoutMs);
+        if (grc != lastError)  // 状态跃变（含首帧/恢复/流断）才落盘，不逐帧刷日志
+            spdlog::info("get_frame {} -> {}", lastError, grc);
         lastError = grc;
         if (grc == SPARKCAP_ERR_OK && f != NULL) {
+            waitStreak = 0;
+            if (!g_firstFrameLogged) {
+                spdlog::info("first frame: {}x{} fmt={} stride={} size={}",
+                             f->width, f->height, (int)f->pixelFormat, f->stride, f->size);
+                g_firstFrameLogged = 1;
+            }
             lastPixelFormat = (int)f->pixelFormat;
             lastStride = f->stride;
             haveFrame = (frameToRgb32(f) == 0);
             ++g_app.framesThisSec;
             InterlockedExchange(&g_errorNotified, 0);  // 帧恢复交付 = 流已恢复
+        } else if (grc == SPARKCAP_ERR_TIMEOUT) {
+            // 帧间隔抖动（驱动输出不规律）是常态：短窗口内保持上一帧画面
+            if (++waitStreak < 5 && g_app.rgbW > 0)
+                haveFrame = 1;
+        } else {
+            waitStreak = 0;  // 真错误（STREAM_LOST 等）立即如实提示
         }
     }
 
@@ -665,6 +749,18 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     (void)prev;
     (void)cmd;
 
+    // 文件日志（运行目录，1MB 轮转保留一份）——报障第一手资料
+    try {
+        auto sink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
+            "sparkcap_demo.log", 1024 * 1024, 1);
+        spdlog::set_default_logger(std::make_shared<spdlog::logger>("demo", sink));
+        spdlog::set_level(spdlog::level::info);
+        spdlog::flush_on(spdlog::level::info);  // 每条即刷：崩溃时日志必在盘
+        spdlog::info("SparkCapDemo start");
+    } catch (...) {
+        // 日志初始化失败（目录只读等）不阻断预览
+    }
+
     Gdiplus::GdiplusStartupInput gdiplusInput = {0};
     ULONG_PTR gdiplusToken = 0;
     Gdiplus::GdiplusStartup(&gdiplusToken, &gdiplusInput, NULL);
@@ -710,6 +806,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
 
     closeDevice();
     sparkcap_set_log_callback(NULL, NULL, NULL);  // 注销后再销毁（回调不再进入）
+    spdlog::info("SparkCapDemo exit");
     sparkcap_destroy_backend(g_app.backend);
     DeleteCriticalSection(&g_logCs);
     free(g_app.rgb);
