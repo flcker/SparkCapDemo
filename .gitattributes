@@ -1,0 +1,17 @@
+# 换行符规范化（与 SparkCap 主仓一致）
+* text=auto
+
+# 源码与文档
+*.c    text
+*.cpp  text
+*.h    text
+*.md   text
+*.json text
+*.cmake text
+CMakeLists.txt text
+
+# 内置 SDK 二进制（显式标记，禁 diff/merge）
+*.lib  binary
+*.exe  binary
+*.dll  binary
+*.pdb  binary

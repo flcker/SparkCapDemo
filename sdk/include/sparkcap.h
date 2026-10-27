@@ -39,6 +39,18 @@ SPARKCAP_API int sparkcap_set_frame_callback(sparkcap_device_t* device,
                                              sparkcap_frame_cb cb,
                                              void* userdata);
 
+/* 注册错误回调（Spec §4.5）：流断开时通知（STREAM_LOST）；
+   不通知恢复（帧回调恢复交付即恢复）。须在 start 前注册。 */
+SPARKCAP_API int sparkcap_set_error_callback(sparkcap_device_t* device,
+                                             sparkcap_error_cb cb,
+                                             void* userdata);
+
+/* 注册日志回调（Spec §4.5）：诊断输出路由。任意时机可注册/取消（传 NULL 取消）。
+   device 可为 NULL（backend 级全局日志）。 */
+SPARKCAP_API int sparkcap_set_log_callback(sparkcap_device_t* device,
+                                           sparkcap_log_cb cb,
+                                           void* userdata);
+
 /* 启动采集（F3）；width/height/fps 传 0、fmt 传 UNKNOWN 表示自动 */
 SPARKCAP_API int sparkcap_start(sparkcap_device_t* device,
                                 int width,

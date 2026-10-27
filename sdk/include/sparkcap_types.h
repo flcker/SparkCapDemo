@@ -92,6 +92,28 @@ typedef void (*sparkcap_frame_cb)(sparkcap_device_t* device,
                                   const sparkcap_frame_t* frame,
                                   void* userdata);
 
+/* 错误回调（Spec §4.5）：流断开时通知；不通知恢复（帧回调恢复交付即恢复）。
+ * 在采集线程执行，须快速返回。 */
+typedef void (*sparkcap_error_cb)(sparkcap_device_t* device,
+                                  int error_code,
+                                  void* userdata);
+
+/* 日志级别 */
+typedef enum sparkcap_log_level_t {
+    SPARKCAP_LOG_INFO  = 0,
+    SPARKCAP_LOG_WARN  = 1,
+    SPARKCAP_LOG_ERROR = 2,
+} sparkcap_log_level_t;
+
+/* 日志回调（Spec §4.5）：诊断输出；backend 为来源后端标识（可为空串）。
+ * 注册后库内部日志（含 FFmpeg av_log）路由到该回调；未注册时库静默。
+ * 任意时机可注册/取消（传 NULL 取消）。 */
+typedef void (*sparkcap_log_cb)(sparkcap_device_t* device,
+                                sparkcap_log_level_t level,
+                                const char* backend,
+                                const char* message,
+                                void* userdata);
+
 #ifdef __cplusplus
 }
 #endif

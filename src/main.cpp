@@ -1,6 +1,8 @@
 // SparkCapDemo —— SparkCap 接入示例：摄像头预览调试工具（Win32 GDI，零依赖）。
 // 布局：顶部工具栏（设备/刷新/分辨率/变换）+ 预览区（letterbox + 变换渲染）。
 // 按键：ESC 退出 | 空格 暂停 | N 下一台设备
+// 回调集成：错误回调（流断即时提示，替代轮询超时猜测）+ 日志回调
+// （FFmpeg av_log 路由到预览区底部——RTSP 连接失败的真实原因可视化）。
 
 #include <sparkcap.h>
 
@@ -66,6 +68,46 @@ typedef struct {
 
 static App g_app = {0};
 static HWND g_ctl[CONTROL_COUNT];
+static HWND g_hwnd;
+
+// ---- 回调（采集线程执行：只做快速记录 + PostMessage，不碰 UI）----
+
+#define WM_APP_ERROR  (WM_APP + 1)  // wp = 错误码
+#define WM_APP_LOG    (WM_APP + 2)
+
+static volatile LONG g_errorNotified;  // 1 = 错误回调已触发（流断确认）
+
+#define LOG_LINES 4
+#define LOG_TEXT  160
+static char g_logs[LOG_LINES][LOG_TEXT];  // 环形：最近 LOG_LINES 条
+static int g_logHead, g_logCount;
+static CRITICAL_SECTION g_logCs;
+
+static void onErrorCb(sparkcap_device_t* dev, int code, void* userdata)
+{
+    (void)dev; (void)userdata;
+    InterlockedExchange(&g_errorNotified, 1);
+    PostMessageW(g_hwnd, WM_APP_ERROR, (WPARAM)code, 0);  // 唤醒重绘（跨线程安全）
+}
+
+static void onLogCb(sparkcap_device_t* dev, sparkcap_log_level_t level,
+                    const char* backend, const char* message, void* userdata)
+{
+    (void)dev; (void)userdata;
+    const char tag = (level == SPARKCAP_LOG_ERROR) ? 'E'
+                   : (level == SPARKCAP_LOG_WARN)  ? 'W' : 'I';
+    EnterCriticalSection(&g_logCs);
+    sprintf_s(g_logs[g_logHead], LOG_TEXT, "%c[%s] %s", tag, backend, message);
+    // FFmpeg 日志自带尾换行，去掉
+    char* nl = strchr(g_logs[g_logHead], '\n');
+    if (nl != NULL)
+        *nl = '\0';
+    g_logHead = (g_logHead + 1) % LOG_LINES;
+    if (g_logCount < LOG_LINES)
+        ++g_logCount;
+    LeaveCriticalSection(&g_logCs);
+    PostMessageW(g_hwnd, WM_APP_LOG, 0, 0);
+}
 
 // ---- 像素格式转换（输出侧全格式 → RGB32）----
 
@@ -284,6 +326,9 @@ static int openDevice(int index)
         g_app.dev = NULL;
         return -1;
     }
+    // 错误回调须在 start 前注册（running 后注册返回 UNSUPPORTED）
+    InterlockedExchange(&g_errorNotified, 0);
+    sparkcap_set_error_callback(g_app.dev, onErrorCb, NULL);
     int w = 0, h = 0;
     sparkcap_pixfmt_t fmtPref = SPARKCAP_PIXFMT_UNKNOWN;
     if (g_app.formatSel > 0 && g_app.formatSel <= g_app.formatCount) {
@@ -390,6 +435,7 @@ static void paint(HDC dc, HWND hwnd)
             lastStride = f->stride;
             haveFrame = (frameToRgb32(f) == 0);
             ++g_app.framesThisSec;
+            InterlockedExchange(&g_errorNotified, 0);  // 帧恢复交付 = 流已恢复
         }
     }
 
@@ -426,6 +472,10 @@ static void paint(HDC dc, HWND hwnd)
             strcpy_s(msg, sizeof(msg), "select a device");
         else if (g_app.paused)
             strcpy_s(msg, sizeof(msg), "paused");
+        else if (g_errorNotified)
+            strcpy_s(msg, sizeof(msg),
+                     "stream lost (error callback) - RTSP auto-reconnects; camera needs "
+                     "re-open. See log below for details");
         else if (lastError == SPARKCAP_ERR_TIMEOUT)
             strcpy_s(msg, sizeof(msg),
                      "waiting for frames... (no data - check bandwidth: USB2 cannot "
@@ -440,6 +490,20 @@ static void paint(HDC dc, HWND hwnd)
         else
             strcpy_s(msg, sizeof(msg), "no frames yet");
         TextOutA(dc, view.left + 16, view.top + 16, msg, (int)lstrlenA(msg));
+    }
+
+    // 底部：最近日志（日志回调路由，FFmpeg/后端诊断）
+    if (g_logCount > 0) {
+        SetBkMode(dc, TRANSPARENT);
+        EnterCriticalSection(&g_logCs);
+        for (int i = 0; i < g_logCount; ++i) {
+            // 从旧到新：环形缓冲中 head 前第 (count-i) 条
+            const int idx = (g_logHead - (g_logCount - i) + LOG_LINES) % LOG_LINES;
+            SetTextColor(dc, RGB(150, 150, 150));
+            TextOutA(dc, view.left + 16, view.bottom - 18 * (g_logCount - i),
+                     g_logs[idx], (int)lstrlenA(g_logs[idx]));
+        }
+        LeaveCriticalSection(&g_logCs);
     }
 
     const ULONGLONG now = GetTickCount64();
@@ -564,6 +628,14 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             return 0;
         }
         break;
+    case WM_APP_ERROR:
+    case WM_APP_LOG: {  // 回调线程 PostMessage：刷新预览区（提示/日志）
+        RECT rc;
+        GetClientRect(hwnd, &rc);
+        rc.top = BAR_H;
+        InvalidateRect(hwnd, &rc, FALSE);
+        return 0;
+    }
     case WM_KEYDOWN:
         switch (wp) {
         case VK_ESCAPE:
@@ -601,6 +673,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         MessageBoxA(NULL, "sparkcap_create_backend failed", "SparkCapDemo", MB_ICONERROR);
         return 1;
     }
+    InitializeCriticalSection(&g_logCs);
+    // 日志回调：进程级全局路由（FFmpeg av_log WARN+ 等），任意时机可注册
+    sparkcap_set_log_callback(NULL, onLogCb, NULL);
 
     WNDCLASSW wc = {0};
     wc.lpfnWndProc = wndProc;
@@ -613,6 +688,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"SparkCapDemo", WS_OVERLAPPEDWINDOW,
                                 CW_USEDEFAULT, CW_USEDEFAULT, 1180, 760, NULL, NULL, inst,
                                 NULL);
+    g_hwnd = hwnd;  // 回调线程经此 PostMessage
 
     refreshDeviceCombo();
     if (g_app.deviceCount > 0) {
@@ -633,7 +709,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     }
 
     closeDevice();
+    sparkcap_set_log_callback(NULL, NULL, NULL);  // 注销后再销毁（回调不再进入）
     sparkcap_destroy_backend(g_app.backend);
+    DeleteCriticalSection(&g_logCs);
     free(g_app.rgb);
     free(g_app.tRgb);
     Gdiplus::GdiplusShutdown(gdiplusToken);
