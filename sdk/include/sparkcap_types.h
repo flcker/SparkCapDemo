@@ -114,6 +114,16 @@ typedef void (*sparkcap_log_cb)(sparkcap_device_t* device,
                                 const char* message,
                                 void* userdata);
 
+/* 功能集位（Spec §4.1，技术选型 §10.4 编译期功能集的运行时查询）。
+ * 位值是公开 ABI：已发布不可变更，新能力追加新位。
+ * 能力域命名（接入方视角），与 CMake option（构建者视角）故意不同名：
+ * ENABLE_FFMPEG option 对应 FEATURE_IP_CAMERA 位。 */
+typedef enum sparkcap_feature_t {
+    SPARKCAP_FEATURE_CAMERA    = (1 << 0),  /* 本地摄像头（USB/虚拟设备，MF/DShow） */
+    SPARKCAP_FEATURE_IP_CAMERA = (1 << 1),  /* IP 摄像头（网络流接入，当前 rtsp://） */
+    /* 追加位预留：v2 域（AUDIO/SCREEN）与未来接入技术（如 NDI）落地时加性扩展 */
+} sparkcap_feature_t;
+
 #ifdef __cplusplus
 }
 #endif

@@ -85,6 +85,11 @@ SPARKCAP_API int sparkcap_destroy_backend(sparkcap_backend_t* backend);
 /* 版本字符串，如 "1.0.0" */
 SPARKCAP_API const char* sparkcap_version(void);
 
+/* 查询本构建的功能集（Spec §4.1）：返回 sparkcap_feature_t 位掩码。
+ * 编译期裁剪（如 SPARKCAP_ENABLE_FFMPEG=OFF）在运行时的唯一可探测入口，
+ * 应用于能力判断与 UI 降级；任意时刻可调，无副作用。 */
+SPARKCAP_API uint32_t sparkcap_query_features(void);
+
 #ifdef __cplusplus
 }
 #endif

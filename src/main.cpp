@@ -791,6 +791,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         spdlog::set_level(spdlog::level::info);
         spdlog::flush_on(spdlog::level::info);  // 每条即刷：崩溃时日志必在盘
         spdlog::info("SparkCapDemo start");
+        // DLL 能力集落日志：报障时一眼排除"误用裁剪版"类环境问题
+        const uint32_t feats = sparkcap_query_features();
+        spdlog::info("sparkcap features: 0x{:x} ({}{})", feats,
+                     (feats & SPARKCAP_FEATURE_CAMERA) ? "camera" : "-",
+                     (feats & SPARKCAP_FEATURE_IP_CAMERA) ? " +ip_camera" : "");
     } catch (...) {
         // 日志初始化失败（目录只读等）不阻断预览
     }
