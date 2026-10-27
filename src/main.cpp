@@ -386,21 +386,51 @@ static int openDevice(int index)
         fmtPref = fm->pixelFormat;
         fps = fm->fps;
     } else if (g_app.formatCount > 0) {
-        // Default：MJPG 优先（USB 摄像头行业默认，Windows 相机应用同策略；
-        // GDI+ 逐帧解码）+ 带宽最小（w*h*fps 最小）——高分辨率未压缩格式
-        // 在 USB 2.0 上会因带宽不足丢包或完全无数据
-        long long bestCost = 0;
+        // Default：720p 档内开箱即用——fps 最高 → 面积最大 → MJPG 优先。
+        // 档位上限 1280×720 是 USB 2.0 的行业安全默认（J.ZAO 实测 720p MJPG@30 满帧；
+        // 2560×1440@30 带宽超载无数据），虚拟设备也不再被压到最小画面。
+        // fps<10 的省电/病态条目剔除（旧"带宽最小"策略曾选中 fps=2 → 实际 1-2fps）。
+        // 回落：设备最低档就超 720p 时取设备最低档（有得选才避高规格）。
+        int hasFast = 0;  // 存在 ≥10fps 条目时，低帧率条目不参与 Default
+        for (int i = 0; i < g_app.formatCount; ++i)
+            if (g_app.formats[i].fps >= 10) {
+                hasFast = 1;
+                break;
+            }
+        const long long kBandMax = 1280LL * 720;
+        long long capArea = kBandMax;
+        int anyInBand = 0;
+        long long minArea = 0;
+        for (int i = 0; i < g_app.formatCount; ++i) {
+            const sparkcap_device_format_t* fm = &g_app.formats[i];
+            if (hasFast && fm->fps < 10)
+                continue;
+            const long long area = (long long)fm->width * fm->height;
+            if (area <= kBandMax)
+                anyInBand = 1;
+            else if (minArea == 0 || area < minArea)
+                minArea = area;
+        }
+        if (!anyInBand && minArea > 0)
+            capArea = minArea;  // 设备全部超档：回落最低档
+
+        int bestFps = -1;
+        long long bestArea = 0;
         int bestIdx = -1;
-        for (int pass = 0; pass < 2 && bestIdx < 0; ++pass) {
-            const bool wantMjpg = (pass == 0);  // 第一轮 MJPG，第二轮非 MJPG
+        for (int pass = 0; pass < 2 && bestIdx < 0; ++pass) {  // 第一轮 MJPG，第二轮非 MJPG
             for (int i = 0; i < g_app.formatCount; ++i) {
-                const bool isMjpg = g_app.formats[i].pixelFormat == SPARKCAP_PIXFMT_MJPG;
-                if (isMjpg != wantMjpg)
+                const sparkcap_device_format_t* fm = &g_app.formats[i];
+                if (hasFast && fm->fps < 10)
                     continue;
-                const long long cost = (long long)g_app.formats[i].width *
-                                       g_app.formats[i].height * g_app.formats[i].fps;
-                if (bestIdx < 0 || cost < bestCost) {
-                    bestCost = cost;
+                const int isMjpg = fm->pixelFormat == SPARKCAP_PIXFMT_MJPG;
+                if (isMjpg != (pass == 0))
+                    continue;
+                const long long area = (long long)fm->width * fm->height;
+                if (area > capArea)
+                    continue;
+                if (fm->fps > bestFps || (fm->fps == bestFps && area > bestArea)) {
+                    bestFps = fm->fps;
+                    bestArea = area;
                     bestIdx = i;
                 }
             }
@@ -545,6 +575,10 @@ static void paint(HDC dc, HWND hwnd)
             const int dh = (int)(th * scale);
             const int dx = view.left + (vw - dw) / 2;
             const int dy = view.top + (vh - dh) / 2;
+            // 缩小必须改拉伸模式：默认 BLACKONWHITE 对源像素做 AND 合并，
+            // 视频逐帧变化时产生闪烁方格纹（1280x720 在默认窗口 0.92x 缩放实测）；
+            // COLORONCOLOR 丢弃法为视频预览标准做法（放大路径本就无合并，最大化即消失）
+            SetStretchBltMode(dc, COLORONCOLOR);
             StretchDIBits(dc, dx, dy, dw, dh, 0, 0, tw, th, pixels, &bi,
                           DIB_RGB_COLORS, SRCCOPY);
         }
