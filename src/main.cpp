@@ -344,8 +344,8 @@ static void closeDevice(void)
 {
     if (g_app.dev != NULL) {
         spdlog::info("close: {}", g_app.devices[g_app.current].name);
-        sparkcap_stop(g_app.dev);
-        sparkcap_close(g_app.dev);
+        sparkcap_camera_stop(g_app.dev);
+        sparkcap_camera_close(g_app.dev);
         g_app.dev = NULL;
     }
 }
@@ -366,7 +366,7 @@ static int openDevice(int index)
     g_app.current = index % g_app.deviceCount;
     const sparkcap_device_info_t* info = &g_app.devices[g_app.current];
 
-    if (sparkcap_open(g_app.backend, info->id, &g_app.dev) != SPARKCAP_ERR_OK) {
+    if (sparkcap_camera_open(g_app.backend, info->id, &g_app.dev) != SPARKCAP_ERR_OK) {
         spdlog::warn("open failed: {}", info->name);
         g_app.dev = NULL;
         return -1;
@@ -374,7 +374,7 @@ static int openDevice(int index)
     spdlog::info("open: {}", info->name);
     // 错误回调须在 start 前注册（running 后注册返回 UNSUPPORTED）
     InterlockedExchange(&g_errorNotified, 0);
-    sparkcap_set_error_callback(g_app.dev, onErrorCb, NULL);
+    sparkcap_camera_set_error_callback(g_app.dev, onErrorCb, NULL);
     int w = 0, h = 0, fps = 0;
     sparkcap_pixfmt_t fmtPref = SPARKCAP_PIXFMT_UNKNOWN;
     if (g_app.formatSel > 0 && g_app.formatSel <= g_app.formatCount) {
@@ -443,9 +443,9 @@ static int openDevice(int index)
         }
     }
     spdlog::info("start: w={} h={} fmt={} fps={}", w, h, (int)fmtPref, fps);
-    if (sparkcap_start(g_app.dev, w, h, fmtPref, fps) != SPARKCAP_ERR_OK) {
+    if (sparkcap_camera_start(g_app.dev, w, h, fmtPref, fps) != SPARKCAP_ERR_OK) {
         spdlog::warn("start failed");
-        sparkcap_close(g_app.dev);
+        sparkcap_camera_close(g_app.dev);
         g_app.dev = NULL;
         return -1;
     }
@@ -458,7 +458,7 @@ static int openDevice(int index)
 static void refreshDeviceCombo(void)
 {
     int count = (int)(sizeof(g_app.devices) / sizeof(g_app.devices[0]));
-    if (sparkcap_list_devices(g_app.backend, g_app.devices, &count) != SPARKCAP_ERR_OK)
+    if (sparkcap_camera_list_devices(g_app.backend, g_app.devices, &count) != SPARKCAP_ERR_OK)
         count = 0;
     g_app.deviceCount = count;
     spdlog::info("device list: {} entries", count);
@@ -488,7 +488,7 @@ static void fillFormatCombo(void)
         const int cap = (int)(sizeof(g_app.formats) / sizeof(g_app.formats[0]));
         int n = cap;
         const int devId = g_app.devices[g_app.current].id;
-        if (sparkcap_get_formats(g_app.backend, devId, g_app.formats, &n) == SPARKCAP_ERR_OK)
+        if (sparkcap_camera_get_formats(g_app.backend, devId, g_app.formats, &n) == SPARKCAP_ERR_OK)
             g_app.formatCount = n > cap ? cap : n;  // get_formats 更新为总数，可能 > 容量
     }
     for (int i = 0; i < g_app.formatCount; ++i) {
@@ -528,7 +528,7 @@ static void paint(HDC dc, HWND hwnd)
         // 超时随协商帧率适配：低帧率会话的帧间隔本来就 >200ms，不能算超时
         const int byFps = (g_app.curFps > 0) ? 2500 / g_app.curFps : 0;
         const int timeoutMs = (byFps > 200) ? byFps : 200;
-        const int grc = sparkcap_get_frame(g_app.dev, &f, timeoutMs);
+        const int grc = sparkcap_camera_get_frame(g_app.dev, &f, timeoutMs);
         if (grc != lastError)  // 状态跃变（含首帧/恢复/流断）才落盘，不逐帧刷日志
             spdlog::info("get_frame {} -> {}", lastError, grc);
         lastError = grc;

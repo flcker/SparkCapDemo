@@ -15,7 +15,7 @@ extern "C" {
 
 /* 枚举设备（F1）。两段式：infos 为 NULL 时 *in_out_count 返回总数；
    否则写入至多 *in_out_count 项并更新为实际数量。 */
-SPARKCAP_API int sparkcap_list_devices(sparkcap_backend_t* backend,
+SPARKCAP_API int sparkcap_camera_list_devices(sparkcap_backend_t* backend,
                                        sparkcap_device_info_t* infos,
                                        int* in_out_count);
 
@@ -24,24 +24,24 @@ SPARKCAP_API int sparkcap_create_backend(sparkcap_backend_t** out_backend);
 
 /* 查询设备能力（F11）。两段式：formats 为 NULL 时 *in_out_count 返回总数；
    否则写入至多 *in_out_count 项并更新为实际总数。open 前后均可调用。 */
-SPARKCAP_API int sparkcap_get_formats(sparkcap_backend_t* backend,
+SPARKCAP_API int sparkcap_camera_get_formats(sparkcap_backend_t* backend,
                                       int device_id,
                                       sparkcap_device_format_t* formats,
                                       int* in_out_count);
 
 /* 打开设备（F2） */
-SPARKCAP_API int sparkcap_open(sparkcap_backend_t* backend,
+SPARKCAP_API int sparkcap_camera_open(sparkcap_backend_t* backend,
                                int device_id,
                                sparkcap_device_t** out_device);
 
 /* 注册帧回调（F5）；须在 start 前注册，start 后返回 UNSUPPORTED（Spec §4.5） */
-SPARKCAP_API int sparkcap_set_frame_callback(sparkcap_device_t* device,
+SPARKCAP_API int sparkcap_camera_set_frame_callback(sparkcap_device_t* device,
                                              sparkcap_frame_cb cb,
                                              void* userdata);
 
 /* 注册错误回调（Spec §4.5）：流断开时通知（STREAM_LOST）；
    不通知恢复（帧回调恢复交付即恢复）。须在 start 前注册。 */
-SPARKCAP_API int sparkcap_set_error_callback(sparkcap_device_t* device,
+SPARKCAP_API int sparkcap_camera_set_error_callback(sparkcap_device_t* device,
                                              sparkcap_error_cb cb,
                                              void* userdata);
 
@@ -52,32 +52,32 @@ SPARKCAP_API int sparkcap_set_log_callback(sparkcap_device_t* device,
                                            void* userdata);
 
 /* 启动采集（F3）；width/height/fps 传 0、fmt 传 UNKNOWN 表示自动 */
-SPARKCAP_API int sparkcap_start(sparkcap_device_t* device,
+SPARKCAP_API int sparkcap_camera_start(sparkcap_device_t* device,
                                 int width,
                                 int height,
                                 sparkcap_pixfmt_t fmt,
                                 int fps);
 
 /* 拉取一帧（F4）；timeout_ms 毫秒超时；帧在下一次 get_frame 前有效（Spec §4.3） */
-SPARKCAP_API int sparkcap_get_frame(sparkcap_device_t* device,
+SPARKCAP_API int sparkcap_camera_get_frame(sparkcap_device_t* device,
                                     sparkcap_frame_t** out_frame,
                                     int timeout_ms);
 
 /* 深拷贝一帧；跨线程/跨调用持有用，用后 release_frame（Spec §4.3）。
    可在帧回调内调用。 */
-SPARKCAP_API int sparkcap_copy_frame(const sparkcap_frame_t* src,
+SPARKCAP_API int sparkcap_camera_copy_frame(const sparkcap_frame_t* src,
                                      sparkcap_frame_t** out_copy);
 
 /* 释放拷贝的帧 */
-SPARKCAP_API int sparkcap_release_frame(sparkcap_frame_t* frame);
+SPARKCAP_API int sparkcap_camera_release_frame(sparkcap_frame_t* frame);
 
 /* 停止采集（F6）；等待在途回调返回后才完成，此后不再产生新回调（Spec §4.4）。
    禁止在回调内调用（返回 IN_CALLBACK）。 */
-SPARKCAP_API int sparkcap_stop(sparkcap_device_t* device);
+SPARKCAP_API int sparkcap_camera_stop(sparkcap_device_t* device);
 
 /* 关闭设备（F7）；句柄立即失效（Spec §4.5）。
    禁止在回调内调用（返回 IN_CALLBACK）。 */
-SPARKCAP_API int sparkcap_close(sparkcap_device_t* device);
+SPARKCAP_API int sparkcap_camera_close(sparkcap_device_t* device);
 
 /* 销毁后端实例 */
 SPARKCAP_API int sparkcap_destroy_backend(sparkcap_backend_t* backend);

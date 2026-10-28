@@ -66,9 +66,9 @@ typedef struct sparkcap_device_format_t {
     int               fps;
 } sparkcap_device_format_t;
 
-/* 设备信息（F1；能力经 sparkcap_get_formats 按需查询） */
+/* 设备信息（F1；能力经 sparkcap_camera_get_formats 按需查询） */
 typedef struct sparkcap_device_info_t {
-    int                      id;        /* deviceId，供 sparkcap_open 使用 */
+    int                      id;        /* deviceId，供 sparkcap_camera_open 使用 */
     char                     name[256];
     char                     path[512]; /* 设备符号链接或 RTSP URL */
     sparkcap_backend_kind_t  backend;

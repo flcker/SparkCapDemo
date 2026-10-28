@@ -9,9 +9,9 @@ int main(void)
     if (sparkcap_create_backend(&backend) != SPARKCAP_ERR_OK)
         return 1;
     int count = 0;
-    sparkcap_list_devices(backend, NULL, &count);
+    sparkcap_camera_list_devices(backend, NULL, &count);
     sparkcap_device_info_t devs[32];
-    sparkcap_list_devices(backend, devs, &count);
+    sparkcap_camera_list_devices(backend, devs, &count);
 
     int id = -1;
     for (int i = 0; i < count; ++i)
@@ -23,18 +23,18 @@ int main(void)
     }
 
     sparkcap_device_t* dev = NULL;
-    sparkcap_open(backend, id, &dev);
-    int rc = sparkcap_start(dev, 2560, 1440, SPARKCAP_PIXFMT_NV12, 15);
+    sparkcap_camera_open(backend, id, &dev);
+    int rc = sparkcap_camera_start(dev, 2560, 1440, SPARKCAP_PIXFMT_NV12, 15);
     printf("start(2560x1440 NV12@15) rc=%d\n", rc);
     if (rc != SPARKCAP_ERR_OK) {
-        sparkcap_close(dev);
+        sparkcap_camera_close(dev);
         sparkcap_destroy_backend(backend);
         return 1;
     }
 
     for (int i = 0; i < 5; ++i) {
         sparkcap_frame_t* f = NULL;
-        rc = sparkcap_get_frame(dev, &f, 5000);
+        rc = sparkcap_camera_get_frame(dev, &f, 5000);
         if (rc == SPARKCAP_ERR_OK && f != NULL) {
             const long long theory = (long long)f->stride * f->height * 3 / 2;
             printf("frame %d: %dx%d fmt=%d stride=%d size=%d (theory stride*h*1.5=%lld "
@@ -45,8 +45,8 @@ int main(void)
             printf("frame %d: rc=%d\n", i, rc);
         }
     }
-    sparkcap_stop(dev);
-    sparkcap_close(dev);
+    sparkcap_camera_stop(dev);
+    sparkcap_camera_close(dev);
     sparkcap_destroy_backend(backend);
     return 0;
 }
