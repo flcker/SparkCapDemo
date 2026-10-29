@@ -14,3 +14,4 @@ out/
 *.pdb
 probe_out.txt
 flash_log.csv
+*.log
