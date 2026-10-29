@@ -39,7 +39,7 @@ int main(void)
             const long long theory = (long long)f->stride * f->height * 3 / 2;
             printf("frame %d: %dx%d fmt=%d stride=%d size=%d (theory stride*h*1.5=%lld "
                    "delta=%lld)\n",
-                   i, f->width, f->height, (int)f->pixelFormat, f->stride, f->size, theory,
+                   i, f->width, f->height, (int)f->pixel_format, f->stride, f->size, theory,
                    (long long)f->size - theory);
         } else {
             printf("frame %d: rc=%d\n", i, rc);

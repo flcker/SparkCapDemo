@@ -62,7 +62,7 @@ typedef enum sparkcap_err_t {
 typedef struct sparkcap_device_format_t {
     int               width;
     int               height;
-    sparkcap_pixfmt_t pixelFormat;
+    sparkcap_pixfmt_t pixel_format;
     int               fps;
 } sparkcap_device_format_t;
 
@@ -81,7 +81,7 @@ typedef struct sparkcap_frame_t {
     void*             data;
     int               width;
     int               height;
-    sparkcap_pixfmt_t pixelFormat;
+    sparkcap_pixfmt_t pixel_format;
     int               stride;
     int               size;        /* 帧数据字节长度：压缩格式必需；2D 格式 = |stride| × height */
     int64_t           timestamp;
@@ -95,7 +95,7 @@ typedef void (*sparkcap_frame_cb)(sparkcap_device_t* device,
 /* 错误回调（Spec §4.5）：流断开时通知；不通知恢复（帧回调恢复交付即恢复）。
  * 在采集线程执行，须快速返回。 */
 typedef void (*sparkcap_error_cb)(sparkcap_device_t* device,
-                                  int error_code,
+                                  sparkcap_err_t error_code,
                                   void* userdata);
 
 /* 日志级别 */

@@ -90,10 +90,10 @@ static char g_logs[LOG_LINES][LOG_TEXT];  // 环形：最近 LOG_LINES 条
 static int g_logHead, g_logCount;
 static CRITICAL_SECTION g_logCs;
 
-static void onErrorCb(sparkcap_device_t* dev, int code, void* userdata)
+static void onErrorCb(sparkcap_device_t* dev, sparkcap_err_t code, void* userdata)
 {
     (void)dev; (void)userdata;
-    spdlog::error("error callback: code={} ({})", code, "stream lost");
+    spdlog::error("error callback: code={} ({})", (int)code, "stream lost");
     InterlockedExchange(&g_errorNotified, 1);
     PostMessageW(g_hwnd, WM_APP_ERROR, (WPARAM)code, 0);  // 唤醒重绘（跨线程安全）
 }
@@ -154,7 +154,7 @@ static int frameToRgb32(const sparkcap_frame_t* f)
     }
 
     const unsigned char* data = (const unsigned char*)f->data;
-    switch (f->pixelFormat) {
+    switch (f->pixel_format) {
     case SPARKCAP_PIXFMT_YUY2: {
         const int stride = f->stride > 0 ? f->stride : w * 2;
         for (int row = 0; row < h; ++row) {
@@ -383,7 +383,7 @@ static int openDevice(int index)
         const sparkcap_device_format_t* fm = &g_app.formats[g_app.formatSel - 1];
         w = fm->width;
         h = fm->height;
-        fmtPref = fm->pixelFormat;
+        fmtPref = fm->pixel_format;
         fps = fm->fps;
     } else if (g_app.formatCount > 0) {
         // Default：720p 档内开箱即用——fps 最高 → 面积最大 → MJPG 优先。
@@ -422,7 +422,7 @@ static int openDevice(int index)
                 const sparkcap_device_format_t* fm = &g_app.formats[i];
                 if (hasFast && fm->fps < 10)
                     continue;
-                const int isMjpg = fm->pixelFormat == SPARKCAP_PIXFMT_MJPG;
+                const int isMjpg = fm->pixel_format == SPARKCAP_PIXFMT_MJPG;
                 if (isMjpg != (pass == 0))
                     continue;
                 const long long area = (long long)fm->width * fm->height;
@@ -438,7 +438,7 @@ static int openDevice(int index)
         if (bestIdx >= 0) {
             w = g_app.formats[bestIdx].width;
             h = g_app.formats[bestIdx].height;
-            fmtPref = g_app.formats[bestIdx].pixelFormat;
+            fmtPref = g_app.formats[bestIdx].pixel_format;
             fps = g_app.formats[bestIdx].fps;
         }
     }
@@ -494,13 +494,13 @@ static void fillFormatCombo(void)
     for (int i = 0; i < g_app.formatCount; ++i) {
         const sparkcap_device_format_t* fm = &g_app.formats[i];
         char text[96];
-        const long long mbps = formatBandwidthMBs(fm->width, fm->height, fm->pixelFormat, fm->fps);
+        const long long mbps = formatBandwidthMBs(fm->width, fm->height, fm->pixel_format, fm->fps);
         if (mbps > 35)
             sprintf_s(text, sizeof(text), "%dx%d %s @%d (%lldMB/s!)",
-                      fm->width, fm->height, pixfmtName(fm->pixelFormat), fm->fps, mbps);
+                      fm->width, fm->height, pixfmtName(fm->pixel_format), fm->fps, mbps);
         else
             sprintf_s(text, sizeof(text), "%dx%d %s @%d",
-                      fm->width, fm->height, pixfmtName(fm->pixelFormat), fm->fps);
+                      fm->width, fm->height, pixfmtName(fm->pixel_format), fm->fps);
         wchar_t wtext[96];
         MultiByteToWideChar(CP_UTF8, 0, text, -1, wtext, 96);
         SendMessageW(g_ctl[2], CB_ADDSTRING, 0, (LPARAM)wtext);
@@ -536,10 +536,10 @@ static void paint(HDC dc, HWND hwnd)
             waitStreak = 0;
             if (!g_firstFrameLogged) {
                 spdlog::info("first frame: {}x{} fmt={} stride={} size={}",
-                             f->width, f->height, (int)f->pixelFormat, f->stride, f->size);
+                             f->width, f->height, (int)f->pixel_format, f->stride, f->size);
                 g_firstFrameLogged = 1;
             }
-            lastPixelFormat = (int)f->pixelFormat;
+            lastPixelFormat = (int)f->pixel_format;
             lastStride = f->stride;
             haveFrame = (frameToRgb32(f) == 0);
             ++g_app.framesThisSec;
@@ -810,7 +810,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     }
     InitializeCriticalSection(&g_logCs);
     // 日志回调：进程级全局路由（FFmpeg av_log WARN+ 等），任意时机可注册
-    sparkcap_set_log_callback(NULL, onLogCb, NULL);
+    sparkcap_set_log_callback(onLogCb, NULL);
 
     WNDCLASSW wc = {0};
     wc.lpfnWndProc = wndProc;
@@ -844,7 +844,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
     }
 
     closeDevice();
-    sparkcap_set_log_callback(NULL, NULL, NULL);  // 注销后再销毁（回调不再进入）
+    sparkcap_set_log_callback(NULL, NULL);  // 注销后再销毁（回调不再进入）
     spdlog::info("SparkCapDemo exit");
     sparkcap_destroy_backend(g_app.backend);
     DeleteCriticalSection(&g_logCs);
