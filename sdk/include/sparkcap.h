@@ -90,6 +90,71 @@ SPARKCAP_API int sparkcap_camera_stop(sparkcap_device_t* device);
    禁止在回调内调用（返回 IN_CALLBACK）。 */
 SPARKCAP_API int sparkcap_camera_close(sparkcap_device_t* device);
 
+/* ==================== 屏幕域：桌面内容捕获（显示器/窗口） ==================== */
+
+/* 枚举显示器（F12）。两段式：displays 为 NULL 时 *in_out_count 返回总数；
+   否则写入至多 *in_out_count 项并更新为实际总数。 */
+SPARKCAP_API int sparkcap_screen_list_displays(sparkcap_backend_t* backend,
+                                        sparkcap_display_info_t* displays,
+                                        int* in_out_count);
+
+/* 枚举可见顶层窗口（F16）。两段式：windows 为 NULL 时 *in_out_count 返回总数；
+   否则写入至多 *in_out_count 项并更新为实际总数。列表为枚举时刻快照。 */
+SPARKCAP_API int sparkcap_screen_list_windows(sparkcap_backend_t* backend,
+                                       sparkcap_window_info_t* windows,
+                                       int* in_out_count);
+
+/* 打开显示器捕获会话（F13）；主后端 DXGI Desktop Duplication，失败自动回落
+   GDI BitBlt（应用无感）；同屏第二会话返回 DEVICE_BUSY（系统单实例限制）。 */
+SPARKCAP_API int sparkcap_screen_open(sparkcap_backend_t* backend,
+                               int display_id,
+                               sparkcap_device_t** out_device);
+
+/* 打开窗口捕获会话（F17）；主后端 WGC（Win10 1903+），不可用自动回落
+   GDI PrintWindow。快照后窗口已关闭返回 NOT_FOUND。 */
+SPARKCAP_API int sparkcap_screen_open_window(sparkcap_backend_t* backend,
+                                      uint64_t hwnd,
+                                      sparkcap_device_t** out_device);
+
+/* 注册帧回调（F5）；须在 start 前注册，start 后返回 UNSUPPORTED（Spec §4.5）。
+   回调类型与帧结构复用视频域。 */
+SPARKCAP_API int sparkcap_screen_set_frame_callback(sparkcap_device_t* device,
+                                             sparkcap_frame_cb cb,
+                                             void* userdata);
+
+/* 注册错误回调（Spec §4.5）：ACCESS_LOST（模式切换/独占全屏/TDR，STREAM_LOST）、
+   窗口最小化（SOURCE_PAUSED，只通知一次）、窗口关闭（STREAM_LOST）等通知；
+   恢复不通知（帧回调恢复交付即恢复）。须在 start 前注册。 */
+SPARKCAP_API int sparkcap_screen_set_error_callback(sparkcap_device_t* device,
+                                             sparkcap_error_cb cb,
+                                             void* userdata);
+
+/* 设置会话选项（sparkcap_screen_option_t 位掩码；Spec §4.7 行为矩阵）。
+   best-effort：不支持的后端/系统组合静默降级到该后端天然行为，不报错；
+   未知位忽略（位掩码前向兼容）。须在 start 前设置，start 后返回 UNSUPPORTED。 */
+SPARKCAP_API int sparkcap_screen_set_options(sparkcap_device_t* device,
+                                      uint32_t options);
+
+/* 启动捕获（F14/F18）——分辨率/格式由目标决定（原生分辨率、RGB32 固定）；
+   fps：0 = 跟随源全速，>0 会话层统一节流（交付帧率 ≤ fps）。 */
+SPARKCAP_API int sparkcap_screen_start(sparkcap_device_t* device,
+                                int fps);
+
+/* 拉取一帧（F14）；timeout_ms 毫秒超时；静止目标：事件驱动后端（DXGI/WGC）
+   返回 TIMEOUT 为正常语义，轮询后端（GDI）定时交付重复帧——应用不假设帧
+   唯一性；帧在下一次 get_frame 前有效（Spec §4.3）。 */
+SPARKCAP_API int sparkcap_screen_get_frame(sparkcap_device_t* device,
+                                    sparkcap_frame_t** out_frame,
+                                    int timeout_ms);
+
+/* 停止捕获（F6）；等待在途回调返回后才完成，此后不再产生新回调（Spec §4.4）。
+   禁止在回调内调用（返回 IN_CALLBACK）。 */
+SPARKCAP_API int sparkcap_screen_stop(sparkcap_device_t* device);
+
+/* 关闭会话（F7）；句柄立即失效（Spec §4.5）。
+   禁止在回调内调用（返回 IN_CALLBACK）。 */
+SPARKCAP_API int sparkcap_screen_close(sparkcap_device_t* device);
+
 /* ==================== 帧工具（库级帧类型，v2 屏幕域复用） ==================== */
 
 /* 深拷贝一帧；跨线程/跨调用持有用，用后 release_frame（Spec §4.3）。

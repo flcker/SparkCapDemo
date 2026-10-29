@@ -50,6 +50,11 @@ typedef struct {
     sparkcap_device_t* dev;
     sparkcap_device_info_t devices[32];
     int deviceCount;
+    sparkcap_display_info_t displays[8];  // 屏幕域条目（拼接在设备列表之后）
+    int displayCount;
+    sparkcap_window_info_t windows[64];   // 窗口捕获条目（拼接在显示器之后，快照）
+    int windowCount;
+    int isScreen;                         // 当前会话来源：1=屏幕域（显示器/窗口）0=摄像头域
     int current;
     int paused;
 
@@ -93,7 +98,10 @@ static CRITICAL_SECTION g_logCs;
 static void onErrorCb(sparkcap_device_t* dev, sparkcap_err_t code, void* userdata)
 {
     (void)dev; (void)userdata;
-    spdlog::error("error callback: code={} ({})", (int)code, "stream lost");
+    // SOURCE_PAUSED（窗口最小化）是可恢复暂停而非流断，如实区分提示
+    const char* what = (code == SPARKCAP_ERR_SOURCE_PAUSED) ? "source paused (window minimized)"
+                                                            : "stream lost";
+    spdlog::error("error callback: code={} ({})", (int)code, what);
     InterlockedExchange(&g_errorNotified, 1);
     PostMessageW(g_hwnd, WM_APP_ERROR, (WPARAM)code, 0);  // 唤醒重绘（跨线程安全）
 }
@@ -343,9 +351,14 @@ static long long formatBandwidthMBs(int w, int h, sparkcap_pixfmt_t f, int fps)
 static void closeDevice(void)
 {
     if (g_app.dev != NULL) {
-        spdlog::info("close: {}", g_app.devices[g_app.current].name);
-        sparkcap_camera_stop(g_app.dev);
-        sparkcap_camera_close(g_app.dev);
+        if (g_app.isScreen) {
+            sparkcap_screen_stop(g_app.dev);
+            sparkcap_screen_close(g_app.dev);
+        } else {
+            spdlog::info("close: {}", g_app.devices[g_app.current].name);
+            sparkcap_camera_stop(g_app.dev);
+            sparkcap_camera_close(g_app.dev);
+        }
         g_app.dev = NULL;
     }
 }
@@ -360,10 +373,65 @@ static void updateTransformButtons(void)
 
 static int openDevice(int index)
 {
-    if (g_app.deviceCount == 0)
+    const int total = g_app.deviceCount + g_app.displayCount + g_app.windowCount;
+    if (total == 0)
         return -1;
     closeDevice();
-    g_app.current = index % g_app.deviceCount;
+    g_app.current = index % total;
+
+    if (g_app.current >= g_app.deviceCount + g_app.displayCount) {
+        // 窗口捕获会话（WGC 主路径，GDI 兜底）：帧尺寸跟随窗口 resize；
+        // 最小化 → SOURCE_PAUSED + TIMEOUT，关闭 → STREAM_LOST（F19）
+        const int wi = g_app.current - g_app.deviceCount - g_app.displayCount;
+        const sparkcap_window_info_t* win = &g_app.windows[wi];
+        g_app.isScreen = 1;
+        if (sparkcap_screen_open_window(g_app.backend, win->hwnd, &g_app.dev)
+            != SPARKCAP_ERR_OK) {
+            spdlog::warn("window open failed: {}", win->title);
+            g_app.dev = NULL;
+            return -1;
+        }
+        spdlog::info("open window: {} ({}x{})", win->title, win->width, win->height);
+        InterlockedExchange(&g_errorNotified, 0);
+        sparkcap_screen_set_error_callback(g_app.dev, onErrorCb, NULL);
+        if (sparkcap_screen_start(g_app.dev, 0) != SPARKCAP_ERR_OK) {
+            spdlog::warn("window start failed");
+            sparkcap_screen_close(g_app.dev);
+            g_app.dev = NULL;
+            return -1;
+        }
+        g_app.curFps = 0;
+        g_app.paused = 0;
+        g_firstFrameLogged = 0;
+        return 0;
+    }
+
+    if (g_app.current >= g_app.deviceCount) {
+        // 屏幕域会话：分辨率/格式由显示器决定（原生分辨率、BGRA 固定）；
+        // 静止桌面 get_frame 返回 TIMEOUT 为正常语义
+        const sparkcap_display_info_t* di = &g_app.displays[g_app.current - g_app.deviceCount];
+        g_app.isScreen = 1;
+        if (sparkcap_screen_open(g_app.backend, di->id, &g_app.dev) != SPARKCAP_ERR_OK) {
+            spdlog::warn("screen open failed: {}", di->name);
+            g_app.dev = NULL;
+            return -1;
+        }
+        spdlog::info("open screen: {} ({}x{})", di->name, di->width, di->height);
+        InterlockedExchange(&g_errorNotified, 0);
+        sparkcap_screen_set_error_callback(g_app.dev, onErrorCb, NULL);
+        if (sparkcap_screen_start(g_app.dev, 0) != SPARKCAP_ERR_OK) {
+            spdlog::warn("screen start failed");
+            sparkcap_screen_close(g_app.dev);
+            g_app.dev = NULL;
+            return -1;
+        }
+        g_app.curFps = 0;  // 帧率跟随桌面变化，无固定协商值
+        g_app.paused = 0;
+        g_firstFrameLogged = 0;
+        return 0;
+    }
+
+    g_app.isScreen = 0;
     const sparkcap_device_info_t* info = &g_app.devices[g_app.current];
 
     if (sparkcap_camera_open(g_app.backend, info->id, &g_app.dev) != SPARKCAP_ERR_OK) {
@@ -466,6 +534,23 @@ static void refreshDeviceCombo(void)
         spdlog::info("  [{}] {} (backend={})", i, g_app.devices[i].name,
                      (int)g_app.devices[i].backend);
 
+    // 屏幕域条目（DXGI 显示器）拼接在摄像头之后：同一 backend 上下文、同一预览路径
+    int dcount = (int)(sizeof(g_app.displays) / sizeof(g_app.displays[0]));
+    if (sparkcap_screen_list_displays(g_app.backend, g_app.displays, &dcount) != SPARKCAP_ERR_OK)
+        dcount = 0;
+    g_app.displayCount = dcount;
+    for (int i = 0; i < dcount; ++i)
+        spdlog::info("  [screen {}] {} {}x{}{}", i, g_app.displays[i].name,
+                     g_app.displays[i].width, g_app.displays[i].height,
+                     g_app.displays[i].is_primary ? " (primary)" : "");
+
+    // 窗口捕获条目（可见顶层窗口快照，WGC 主路径）
+    int wcount = (int)(sizeof(g_app.windows) / sizeof(g_app.windows[0]));
+    if (sparkcap_screen_list_windows(g_app.backend, g_app.windows, &wcount) != SPARKCAP_ERR_OK)
+        wcount = 0;
+    g_app.windowCount = wcount;
+    spdlog::info("  window list: {} entries", wcount);
+
     SendMessageW(g_ctl[0], CB_RESETCONTENT, 0, 0);
     for (int i = 0; i < count; ++i) {
         wchar_t text[320];
@@ -473,6 +558,23 @@ static void refreshDeviceCombo(void)
             : g_app.devices[i].backend == SPARKCAP_BACKEND_DSHOW ? " [DShow]" : " [RTSP]";
         char line[300];
         sprintf_s(line, sizeof(line), "%s%s", g_app.devices[i].name, backend);
+        MultiByteToWideChar(CP_UTF8, 0, line, -1, text, 320);
+        SendMessageW(g_ctl[0], CB_ADDSTRING, 0, (LPARAM)text);
+    }
+    for (int i = 0; i < dcount; ++i) {
+        wchar_t text[320];
+        char line[300];
+        sprintf_s(line, sizeof(line), "[Screen] %s %dx%d", g_app.displays[i].name,
+                  g_app.displays[i].width, g_app.displays[i].height);
+        MultiByteToWideChar(CP_UTF8, 0, line, -1, text, 320);
+        SendMessageW(g_ctl[0], CB_ADDSTRING, 0, (LPARAM)text);
+    }
+    for (int i = 0; i < wcount; ++i) {
+        wchar_t text[320];
+        char line[300];
+        const char* title = g_app.windows[i].title[0] ? g_app.windows[i].title : "(untitled)";
+        sprintf_s(line, sizeof(line), "[Window] %s (%dx%d)", title,
+                  g_app.windows[i].width, g_app.windows[i].height);
         MultiByteToWideChar(CP_UTF8, 0, line, -1, text, 320);
         SendMessageW(g_ctl[0], CB_ADDSTRING, 0, (LPARAM)text);
     }
@@ -484,7 +586,20 @@ static void fillFormatCombo(void)
     SendMessageW(g_ctl[2], CB_ADDSTRING, 0, (LPARAM)L"Default");
 
     g_app.formatCount = 0;
-    if (g_app.deviceCount > 0) {
+    if (g_app.current >= g_app.deviceCount + g_app.displayCount) {
+        // 窗口捕获：尺寸跟随目标窗口 resize，无格式协商
+        wchar_t text[96];
+        MultiByteToWideChar(CP_UTF8, 0, "Follow window (BGRA)", -1, text, 96);
+        SendMessageW(g_ctl[2], CB_ADDSTRING, 0, (LPARAM)text);
+    } else if (g_app.current >= g_app.deviceCount && g_app.displayCount > 0) {
+        // 屏幕域：分辨率/格式不可协商，只展示原生档（选择无效果）
+        const sparkcap_display_info_t* di = &g_app.displays[g_app.current - g_app.deviceCount];
+        wchar_t text[96];
+        char line[80];
+        sprintf_s(line, sizeof(line), "Native %dx%d BGRA", di->width, di->height);
+        MultiByteToWideChar(CP_UTF8, 0, line, -1, text, 96);
+        SendMessageW(g_ctl[2], CB_ADDSTRING, 0, (LPARAM)text);
+    } else if (g_app.deviceCount > 0) {
         const int cap = (int)(sizeof(g_app.formats) / sizeof(g_app.formats[0]));
         int n = cap;
         const int devId = g_app.devices[g_app.current].id;
@@ -525,10 +640,19 @@ static void paint(HDC dc, HWND hwnd)
     static int waitStreak = 0;  // 连续超时计数（防抖：偶发超时重画上一帧，不闪 waiting 文本）
     if (!g_app.paused && g_app.dev != NULL)
     {
-        // 超时随协商帧率适配：低帧率会话的帧间隔本来就 >200ms，不能算超时
-        const int byFps = (g_app.curFps > 0) ? 2500 / g_app.curFps : 0;
-        const int timeoutMs = (byFps > 200) ? byFps : 200;
-        const int grc = sparkcap_camera_get_frame(g_app.dev, &f, timeoutMs);
+        int timeoutMs;
+        if (g_app.isScreen) {
+            // 屏幕域：短超时保持 UI 流畅（队列有帧立即返回；静止桌面快速
+            // TIMEOUT——桌面没变化不构成"等待异常"）
+            timeoutMs = 30;
+        } else {
+            // 摄像头：超时随协商帧率适配（低帧率会话的帧间隔本来就 >200ms）
+            const int byFps = (g_app.curFps > 0) ? 2500 / g_app.curFps : 0;
+            timeoutMs = (byFps > 200) ? byFps : 200;
+        }
+        const int grc = g_app.isScreen
+            ? sparkcap_screen_get_frame(g_app.dev, &f, timeoutMs)
+            : sparkcap_camera_get_frame(g_app.dev, &f, timeoutMs);
         if (grc != lastError)  // 状态跃变（含首帧/恢复/流断）才落盘，不逐帧刷日志
             spdlog::info("get_frame {} -> {}", lastError, grc);
         lastError = grc;
@@ -545,8 +669,10 @@ static void paint(HDC dc, HWND hwnd)
             ++g_app.framesThisSec;
             InterlockedExchange(&g_errorNotified, 0);  // 帧恢复交付 = 流已恢复
         } else if (grc == SPARKCAP_ERR_TIMEOUT) {
-            // 帧间隔抖动（驱动输出不规律）是常态：短窗口内保持上一帧画面
-            if (++waitStreak < 5 && g_app.rgbW > 0)
+            // 帧间隔抖动（驱动输出不规律）是常态：短窗口内保持上一帧画面；
+            // 屏幕域静止桌面 TIMEOUT 为正常语义（F14），始终保留上一帧
+            ++waitStreak;
+            if ((waitStreak < 5 || g_app.isScreen) && g_app.rgbW > 0)
                 haveFrame = 1;
         } else {
             waitStreak = 0;  // 真错误（STREAM_LOST 等）立即如实提示
@@ -707,7 +833,7 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         case IDC_DEVICE_COMBO:
             if (HIWORD(wp) == CBN_SELCHANGE) {
                 const int sel = (int)SendMessageW(g_ctl[0], CB_GETCURSEL, 0, 0);
-                if (sel >= 0 && sel < g_app.deviceCount) {
+                if (sel >= 0 && sel < g_app.deviceCount + g_app.displayCount + g_app.windowCount) {
                     g_app.current = sel;  // 先更新索引：fillFormatCombo 按新设备查能力
                     fillFormatCombo();
                     openDevice(sel);
@@ -717,7 +843,7 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         case IDC_REFRESH_BTN:
             closeDevice();
             refreshDeviceCombo();
-            if (g_app.deviceCount > 0) {
+            if (g_app.deviceCount + g_app.displayCount + g_app.windowCount > 0) {
                 SendMessageW(g_ctl[0], CB_SETCURSEL, 0, 0);
                 fillFormatCombo();
                 openDevice(0);
@@ -763,7 +889,7 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             g_app.paused = !g_app.paused;
             return 0;
         case 'N':
-            if (g_app.deviceCount > 0) {
+            if (g_app.deviceCount + g_app.displayCount + g_app.windowCount > 0) {
                 fillFormatCombo();
                 openDevice(g_app.current + 1);
                 SendMessageW(g_ctl[0], CB_SETCURSEL, g_app.current, 0);
@@ -793,9 +919,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show)
         spdlog::info("SparkCapDemo start");
         // DLL 能力集落日志：报障时一眼排除"误用裁剪版"类环境问题
         const uint32_t feats = sparkcap_query_features();
-        spdlog::info("sparkcap features: 0x{:x} ({}{})", feats,
+        spdlog::info("sparkcap features: 0x{:x} ({}{}{})", feats,
                      (feats & SPARKCAP_FEATURE_CAMERA) ? "camera" : "-",
-                     (feats & SPARKCAP_FEATURE_IP_CAMERA) ? " +ip_camera" : "");
+                     (feats & SPARKCAP_FEATURE_IP_CAMERA) ? " +ip_camera" : "",
+                     (feats & SPARKCAP_FEATURE_SCREEN) ? " +screen" : "");
     } catch (...) {
         // 日志初始化失败（目录只读等）不阻断预览
     }
