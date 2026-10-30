@@ -155,6 +155,74 @@ SPARKCAP_API int sparkcap_screen_stop(sparkcap_device_t* device);
    禁止在回调内调用（返回 IN_CALLBACK）。 */
 SPARKCAP_API int sparkcap_screen_close(sparkcap_device_t* device);
 
+/* ==================== 音频域：麦克风采集 / 扬声器回采（WASAPI） ==================== */
+
+/* 枚举麦克风端点（F22）。两段式：infos 为 NULL 时 *in_out_count 返回总数；
+   否则写入至多 *in_out_count 项并更新为实际总数。条目含 mix format 预览。 */
+SPARKCAP_API int sparkcap_audio_list_microphones(sparkcap_backend_t* backend,
+                                          sparkcap_audio_device_info_t* infos,
+                                          int* in_out_count);
+
+/* 枚举扬声器回采端点（F23，eRender 输出）。两段式，字段同上；
+   is_default 为默认播放设备。 */
+SPARKCAP_API int sparkcap_audio_list_loopbacks(sparkcap_backend_t* backend,
+                                        sparkcap_audio_device_info_t* infos,
+                                        int* in_out_count);
+
+/* 打开麦克风会话（F24）。endpoint_id 为枚举条目的 id（WASAPI endpoint ID）；
+   format 双模式：NULL = mix format 原样交付（零转换）；指定三元组 = 系统侧
+   AUTOCONVERTPCM 转换（上报恒为实际交付格式）。 */
+SPARKCAP_API int sparkcap_audio_open(sparkcap_backend_t* backend,
+                              const char* endpoint_id,
+                              const sparkcap_audio_format_t* format,
+                              sparkcap_device_t** out_device);
+
+/* 打开扬声器回采会话（F24，loopback）。endpoint_id 为 eRender 端点 id；
+   format 语义同 sparkcap_audio_open。 */
+SPARKCAP_API int sparkcap_audio_open_loopback(sparkcap_backend_t* backend,
+                                       const char* endpoint_id,
+                                       const sparkcap_audio_format_t* format,
+                                       sparkcap_device_t** out_device);
+
+/* 注册音频帧回调（F25）；须在 start 前注册，start 后返回 UNSUPPORTED（Spec §4.5）。
+   回调类型 sparkcap_audio_frame_cb / 帧结构 sparkcap_audio_frame_t（独立于视频域）。 */
+SPARKCAP_API int sparkcap_audio_set_frame_callback(sparkcap_device_t* device,
+                                            sparkcap_audio_frame_cb cb,
+                                            void* userdata);
+
+/* 注册错误回调（Spec §4.5）：端点拔出/失效时通知（STREAM_LOST）；
+   不通知恢复（帧回调恢复交付即恢复）。须在 start 前注册。 */
+SPARKCAP_API int sparkcap_audio_set_error_callback(sparkcap_device_t* device,
+                                            sparkcap_error_cb cb,
+                                            void* userdata);
+
+/* 启动采集（F25）。fps 仅 0 合法（采样率即节流；参数为三域 start 签名同构
+   保留），非 0 返回 INVALID_ARG。 */
+SPARKCAP_API int sparkcap_audio_start(sparkcap_device_t* device,
+                               int fps);
+
+/* 拉取一帧（F25）；timeout_ms 毫秒超时。loopback 静默期交付合成静音帧
+   （不超时，timestamp 单调连续）；帧在下一次 get_frame 前有效（Spec §4.3）。 */
+SPARKCAP_API int sparkcap_audio_get_frame(sparkcap_device_t* device,
+                                   sparkcap_audio_frame_t** out_frame,
+                                   int timeout_ms);
+
+/* 停止采集（F6）；等待在途回调返回后才完成，此后不再产生新回调（Spec §4.4）。
+   禁止在回调内调用（返回 IN_CALLBACK）。 */
+SPARKCAP_API int sparkcap_audio_stop(sparkcap_device_t* device);
+
+/* 关闭会话（F7）；句柄立即失效（Spec §4.5）。
+   禁止在回调内调用（返回 IN_CALLBACK）。 */
+SPARKCAP_API int sparkcap_audio_close(sparkcap_device_t* device);
+
+/* 深拷贝音频帧（F26）；跨线程/跨调用持有用，用后 sparkcap_audio_release_frame
+   （Spec §4.3）。可在帧回调内调用。 */
+SPARKCAP_API int sparkcap_audio_copy_frame(const sparkcap_audio_frame_t* src,
+                                    sparkcap_audio_frame_t** out_copy);
+
+/* 释放拷贝的音频帧 */
+SPARKCAP_API int sparkcap_audio_release_frame(sparkcap_audio_frame_t* frame);
+
 /* ==================== 帧工具（库级帧类型，v2 屏幕域复用） ==================== */
 
 /* 深拷贝一帧；跨线程/跨调用持有用，用后 release_frame（Spec §4.3）。

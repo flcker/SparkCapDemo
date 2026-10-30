@@ -104,6 +104,48 @@ typedef enum sparkcap_screen_option_t {
     SPARKCAP_SCREEN_BORDER = (1 << 1),  /* 保留系统提示边框（默认尽力关闭） */
 } sparkcap_screen_option_t;
 
+/* 音频采样格式（音频域，Spec F24/F26）。交错（interleaved）布局。 */
+typedef enum sparkcap_sample_format_t {
+    SPARKCAP_SAMPLE_UNKNOWN = 0,
+    SPARKCAP_SAMPLE_F32     = 1,  /* float32 交错（WASAPI 共享模式 mix format 典型值） */
+    SPARKCAP_SAMPLE_S16     = 2,  /* int16 交错 */
+} sparkcap_sample_format_t;
+
+/* 音频格式三元组（sparkcap_audio_open 的 format 参数）：
+ * 采样格式 + 采样率 + 声道数。 */
+typedef struct sparkcap_audio_format_t {
+    sparkcap_sample_format_t sample_format;
+    int                      sample_rate;  /* Hz */
+    int                      channels;
+} sparkcap_audio_format_t;
+
+/* 音频端点信息（F22/F23；麦克风与回采共用，两族枚举各自返回）。
+ * id 为 WASAPI endpoint ID 字符串（跨枚举稳定标识，蓝牙重连后仍有效），
+ * 供 sparkcap_audio_open / sparkcap_audio_open_loopback 使用；
+ * name 为端点友好名；sample_rate/channels/format 为该端点 mix format 预览
+ * （UI 展示用，open 传 NULL format 时即按此原样交付）。 */
+typedef struct sparkcap_audio_device_info_t {
+    char                    id[256];
+    char                    name[128];
+    int                     is_default;
+    int                     sample_rate;
+    int                     channels;
+    sparkcap_sample_format_t format;
+} sparkcap_audio_device_info_t;
+
+/* 音频帧（F26；内存由库分配、库释放，应用不得 free）。交错布局，
+ * size = samples_per_channel * channels * 每样本字节。
+ * timestamp 单位 100ns，与视频域帧时间戳同源可对齐（A/V 时钟域）。 */
+typedef struct sparkcap_audio_frame_t {
+    void*                    data;
+    int                      size;                /* 帧数据字节长度 */
+    int64_t                  timestamp;           /* 100ns，QPC 同源 */
+    int                      samples_per_channel; /* 每声道样本数 */
+    int                      sample_rate;         /* Hz */
+    int                      channels;
+    sparkcap_sample_format_t sample_format;
+} sparkcap_audio_frame_t;
+
 /* 帧（技术选型 §5；内存由库分配、库释放，应用不得 free）。
  * stride 符号表示行序：正 = top-down，负 = bottom-up（data 指向最底行）；
  * RGB 系格式通常为 bottom-up。压缩格式（MJPG）stride 恒 0。 */
@@ -121,6 +163,12 @@ typedef struct sparkcap_frame_t {
 typedef void (*sparkcap_frame_cb)(sparkcap_device_t* device,
                                   const sparkcap_frame_t* frame,
                                   void* userdata);
+
+/* 音频帧回调（F25/F26）：在采集线程执行，须快速返回；帧仅回调期间有效。
+ * 不与视频 sparkcap_frame_cb 混用（帧结构维度语义不同：samples vs width/height）。 */
+typedef void (*sparkcap_audio_frame_cb)(sparkcap_device_t* device,
+                                        const sparkcap_audio_frame_t* frame,
+                                        void* userdata);
 
 /* 错误回调（Spec §4.5）：流断开时通知；不通知恢复（帧回调恢复交付即恢复）。
  * 在采集线程执行，须快速返回。 */
@@ -152,7 +200,8 @@ typedef enum sparkcap_feature_t {
     SPARKCAP_FEATURE_CAMERA    = (1 << 0),  /* 本地摄像头（USB/虚拟设备，MF/DShow） */
     SPARKCAP_FEATURE_IP_CAMERA = (1 << 1),  /* IP 摄像头（网络流接入，当前 rtsp://） */
     SPARKCAP_FEATURE_SCREEN    = (1 << 2),  /* 屏幕抓屏（DXGI Desktop Duplication） */
-    /* 追加位预留：v2 域（AUDIO）与未来接入技术（如 NDI）落地时加性扩展 */
+    SPARKCAP_FEATURE_AUDIO     = (1 << 3),  /* 音频采集（麦克风 + 扬声器回采，WASAPI） */
+    /* 追加位预留：未来接入技术（如 NDI）落地时加性扩展 */
 } sparkcap_feature_t;
 
 #ifdef __cplusplus
