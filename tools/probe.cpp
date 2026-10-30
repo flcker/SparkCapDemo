@@ -1,3 +1,6 @@
+// Copyright (c) 2026 flcker <molanyousi@gmail.com>
+// SPDX-License-Identifier: LGPL-3.0-or-later
+
 // 探针：逐台设备 open → start（无偏好）→ 取帧 → 打印实际 pixel_format/stride/size
 #include <sparkcap.h>
 #include <stdio.h>

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 flcker <molanyousi@gmail.com>
+// SPDX-License-Identifier: LGPL-3.0-or-later
+
 // 诊断：J.ZAO 2560x1440@15 帧的实际 size 与理论值对比
 #include <sparkcap.h>
 #include <stdio.h>

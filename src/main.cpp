@@ -1,3 +1,6 @@
+// Copyright (c) 2026 flcker <molanyousi@gmail.com>
+// SPDX-License-Identifier: LGPL-3.0-or-later
+
 // SparkCapDemo —— SparkCap 多会话并发测试台（Win32 GDI，零依赖）。
 // 上部工具栏（每类一行）：设备下拉 + 格式下拉（摄像头/麦克风/回采有；
 //   显示器/窗口原生 BGRA 无）+ [开]（重选设备再点开可累积多路，上限 8）
@@ -1123,14 +1126,16 @@ static void paint(HDC dc, HWND hwnd)
         LeaveCriticalSection(&g_logCs);
     }
 
-    // 标题栏：每秒更新会话数与总拉帧率（全部会话合计）
+    // 标题栏：每秒更新会话数与总拉帧率（全部会话合计）。
+    // [sparkcap x.y.z+sha.date] = 库版本 + 构建元数据（DLL↔源码 commit 对账，
+    // 截图报障时直接可见）；version 返回静态指针，每秒重取无开销。
     const ULONGLONG now = GetTickCount64();
     if (now - g_secStart >= 1000) {
-        char title[96];
-        sprintf_s(title, sizeof(title), "SparkCapDemo  sessions=%d  %u fps",
-                  g_sessCount, g_framesThisSec);
-        wchar_t wtitle[96];
-        toW(title, wtitle, 96);
+        char title[128];
+        sprintf_s(title, sizeof(title), "SparkCapDemo  [%s]  sessions=%d  %u fps",
+                  sparkcap_version(), g_sessCount, g_framesThisSec);
+        wchar_t wtitle[128];
+        toW(title, wtitle, 128);
         SetWindowTextW(hwnd, wtitle);
         g_framesThisSec = 0;
         g_secStart = now;

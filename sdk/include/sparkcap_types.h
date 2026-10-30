@@ -1,3 +1,6 @@
+// Copyright (c) 2026 flcker <molanyousi@gmail.com>
+// SPDX-License-Identifier: LGPL-3.0-or-later
+
 #ifndef SPARKCAP_TYPES_H
 #define SPARKCAP_TYPES_H
 
